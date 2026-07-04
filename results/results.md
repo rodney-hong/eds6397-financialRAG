@@ -1,14 +1,14 @@
 # Baseline vs Engineered — Results (K=5)
 
-LLM backend for generation & judging: **OFFLINE deterministic heuristic**
+LLM backend for generation & judging: **Anthropic (Claude)**
 
-Corpus: 48 Treasury bulletins (2022-2025), 25 evaluation questions.
+Corpus: 40 Treasury bulletins (2010-2025), 40 evaluation questions.
 
 | Metric | Baseline | Engineered | Delta (Eng - Base) |
 | --- | --- | --- | --- |
-| Hit Rate@5 | 0.76 | 1.0 | 0.24 |
-| MRR | 0.547 | 1.0 | 0.453 |
-| Recall@5 | 0.38 | 0.98 | 0.6 |
-| Groundedness | 1.0 | 1.0 | 0.0 |
-| Factual Accuracy | 0.4 | 0.96 | 0.56 |
-| Hallucination Rate | 0.0 | 0.0 | 0.0 |
+| Hit Rate@5 | 0.325 | 0.4 | 0.075 |
+| MRR | 0.128 | 0.226 | 0.098 |
+| Recall@5 | 0.0 | 0.003 | 0.003 |
+| Groundedness | 0.904 | 0.959 | 0.055 |
+| Factual Accuracy | 0.025 | 0.025 | 0.0 |
+| Hallucination Rate | 0.062 | 0.037 | -0.025 |

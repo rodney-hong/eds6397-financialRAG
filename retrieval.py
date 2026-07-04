@@ -30,8 +30,11 @@ import config
 from chunking import Chunk
 from data_prep import MONTH_NAMES
 
-# question -> (year, month) parsing for the Engineered retriever
-_YEAR_RE = re.compile(r"\b(20(?:2[2-5]))\b")
+# question -> (year, month) parsing for the Engineered retriever.
+# Match any plausible 4-digit year; if the parsed year has no chunks the store's
+# search() simply falls back to a full (unfiltered) search, so being liberal here
+# is safe.
+_YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
 _MONTH_RE = re.compile(
     r"\b(" + "|".join(MONTH_NAMES[i] for i in range(1, 13)) + r")\b", re.IGNORECASE
 )

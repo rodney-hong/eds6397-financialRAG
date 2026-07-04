@@ -158,13 +158,16 @@ def _download_real_data() -> None:
     """Download the real corpus + officeqa_full.csv from Hugging Face.
 
     Requires prior access approval on https://huggingface.co/datasets/databricks/officeqa
-    and a valid HF_TOKEN. Files are copied into the same on-disk layout the mock
-    generator uses, so the rest of the pipeline is source-agnostic.
+    and a valid HF_TOKEN. To avoid pulling the whole (hundreds of files) corpus,
+    we download ONLY the .txt files referenced by CSV rows that fall entirely
+    inside the [YEAR_MIN, YEAR_MAX] window. Files land in the same on-disk layout
+    the mock generator uses, so the rest of the pipeline is source-agnostic.
     """
-    from huggingface_hub import hf_hub_download, snapshot_download
+    from huggingface_hub import hf_hub_download
 
     token = os.environ["HF_TOKEN"]
     repo = "databricks/officeqa"
+    prefix = "treasury_bulletins_parsed/transformed"
 
     # 1. Answer key.
     csv_local = hf_hub_download(
@@ -174,23 +177,31 @@ def _download_real_data() -> None:
     df = pd.read_csv(csv_local, dtype=str).fillna("")
     df.to_csv(config.CSV_PATH, index=False)
 
-    # 2. Transformed text corpus (only files in our year range, to save bandwidth).
-    patterns = [
-        f"treasury_bulletins_parsed/transformed/treasury_bulletin_{y}_*.txt"
-        for y in config.YEARS
-    ]
-    snap = snapshot_download(
-        repo_id=repo, repo_type="dataset",
-        allow_patterns=patterns, token=token,
-    )
-    src_dir = Path(snap) / "treasury_bulletins_parsed" / "transformed"
+    # 2. Which corpus files do the in-window rows actually need?
+    needed: set[str] = set()
+    for _, row in df.iterrows():
+        files = split_source_files(row.get("source_files", ""))
+        yms = [parse_year_month(f) for f in files]
+        if files and all(ym and ym[0] in config.YEARS for ym in yms):
+            needed.update(files)
+
+    # 3. Download exactly those files.
     n = 0
-    for txt in src_dir.glob("treasury_bulletin_*.txt"):
-        (config.CORPUS_DIR / txt.name).write_text(
-            txt.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8"
-        )
-        n += 1
-    print(f"[data_prep] Downloaded real data: {len(df)} CSV rows, {n} corpus files.")
+    for name in sorted(needed):
+        try:
+            local = hf_hub_download(
+                repo_id=repo, repo_type="dataset",
+                filename=f"{prefix}/{name}", token=token,
+            )
+            (config.CORPUS_DIR / name).write_text(
+                Path(local).read_text(encoding="utf-8", errors="ignore"), encoding="utf-8"
+            )
+            n += 1
+        except Exception as e:
+            print(f"[data_prep]   could not fetch {name}: {type(e).__name__}: {e}")
+    print(f"[data_prep] Downloaded real data: {len(df)} CSV rows total, "
+          f"{n}/{len(needed)} in-window corpus files "
+          f"(window {config.YEAR_MIN}-{config.YEAR_MAX}).")
 
 
 # --- Mock data generator ------------------------------------------------------
@@ -254,11 +265,13 @@ def _generate_mock_data() -> None:
     """Write the mock corpus + officeqa_full.csv (idempotent, deterministic)."""
     rng = random.Random(6397)  # course-code seed :)
 
-    # In-range documents: every month of every year in config.YEARS => lots of
-    # same-looking distractors, which stresses retrieval realistically.
-    in_range = [(y, m) for y in config.YEARS for m in range(1, 13)]
-    # Out-of-range documents to prove the year filter drops them.
-    out_of_range = [(2021, 12), (2026, 1)]
+    # In-range documents: the mock demo uses the most recent 4 years of the
+    # window (keeps the offline demo small regardless of how wide the real window
+    # is) with every month => lots of same-looking distractors.
+    mock_years = list(config.YEARS)[-4:]
+    in_range = [(y, m) for y in mock_years for m in range(1, 13)]
+    # Out-of-range documents (just outside the window) to prove the filter drops them.
+    out_of_range = [(config.YEAR_MIN - 1, 12), (config.YEAR_MAX + 1, 1)]
 
     figures: dict[tuple[int, int], _DocFigures] = {}
     for (y, m) in in_range + out_of_range:
@@ -289,7 +302,7 @@ def _generate_mock_data() -> None:
     # Sample ~6 questions per year, spread across months and question types, so the
     # number of (LLM-backed) evaluations stays bounded while the corpus is rich.
     qtypes = ["receipts", "outlays", "public_debt", "deficit"]
-    for y in config.YEARS:
+    for y in mock_years:
         chosen_months = rng.sample(range(1, 13), 6)
         for i, m in enumerate(chosen_months):
             f = figures[(y, m)]
@@ -311,9 +324,9 @@ def _generate_mock_data() -> None:
                     f"{mname} {y}?", f.deficit, [fname], "hard")
 
     # One multi-source in-range question (Hit/MRR count ANY listed source file as correct).
-    y = 2024
+    y = mock_years[-1]
     ma, mb = 3, 9
-    fa, fb = figures[(y, ma)], figures[(y, mb)]
+    fb = figures[(y, mb)]
     add(f"Total Federal budget receipts were reported for both {MONTH_NAMES[ma]} {y} and "
         f"{MONTH_NAMES[mb]} {y}. What were the receipts, in millions, for {MONTH_NAMES[mb]} {y}?",
         fb.receipts,
@@ -321,11 +334,13 @@ def _generate_mock_data() -> None:
         "hard")
 
     # Two rows that MUST be dropped by the CSV filter (exercise the audit path).
-    f2021 = figures[(2021, 12)]
-    add("What were total Federal budget receipts in December 2021?",
-        f2021.receipts, ["treasury_bulletin_2021_12.txt"], "easy")  # out of range -> dropped
-    add("What were total Federal budget receipts in January 2026?",
-        figures[(2026, 1)].receipts, ["treasury_bulletin_2026_01.txt"], "easy")  # dropped
+    (lo_y, lo_m), (hi_y, hi_m) = out_of_range
+    add(f"What were total Federal budget receipts in {MONTH_NAMES[lo_m]} {lo_y}?",
+        figures[(lo_y, lo_m)].receipts,
+        [f"treasury_bulletin_{lo_y}_{lo_m:02d}.txt"], "easy")   # below window -> dropped
+    add(f"What were total Federal budget receipts in {MONTH_NAMES[hi_m]} {hi_y}?",
+        figures[(hi_y, hi_m)].receipts,
+        [f"treasury_bulletin_{hi_y}_{hi_m:02d}.txt"], "easy")   # above window -> dropped
 
     pd.DataFrame(rows).to_csv(config.CSV_PATH, index=False)
     print(f"[data_prep] Generated mock corpus: {len(in_range)} in-range + "
