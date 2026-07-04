@@ -1,0 +1,14 @@
+# Core data / numerics
+numpy>=1.26
+pandas>=2.0
+
+# Embeddings + vector search (baseline & engineered retrievers)
+sentence-transformers>=3.0    # local embedding models (all-MiniLM-L6-v2, bge-small-en-v1.5)
+faiss-cpu>=1.7                # in-memory exact vector index (our "vector DB")
+
+# Generation + LLM-as-judge (grounded on Claude; falls back to offline heuristic if no key)
+anthropic>=0.40
+
+# Real-data download from the gated Hugging Face dataset (optional; mock data works without it)
+huggingface_hub>=0.24
+datasets>=2.19
