@@ -19,7 +19,7 @@ import pandas as pd
 import config
 from data_prep import ensure_data
 from chunking import chunk_corpus
-from retrieval import BaselineRetriever, EngineeredRetriever
+from retrieval import BaselineRetriever, EngineeredRetriever, EngineeredNoMetadataRetriever
 from evaluate import evaluate_system
 from llm import get_llm
 
@@ -68,6 +68,13 @@ def main() -> None:
     base_res = evaluate_system("Baseline", base_ret, base_chunks, df, "baseline")
     eng_res = evaluate_system("Engineered", eng_ret, eng_chunks, df, "engineered")
 
+    # Ablation: engineered pipeline with the Year/Month metadata filter turned OFF
+    # (same bge model, same engineered chunks, same engineered prompt).
+    print("[run] Ablation: engineered-without-metadata ...")
+    nometa_ret = EngineeredNoMetadataRetriever(eng_chunks)
+    nometa_res = evaluate_system("Engineered (no metadata)", nometa_ret,
+                                 eng_chunks, df, "engineered")
+
     # 5. Assemble the results table.
     table = pd.DataFrame({
         "Metric": METRIC_ORDER,
@@ -88,6 +95,25 @@ def main() -> None:
     # 6. Per-question audit trails.
     pd.DataFrame(base_res.records).to_csv(config.RESULTS_DIR / "per_question_baseline.csv", index=False)
     pd.DataFrame(eng_res.records).to_csv(config.RESULTS_DIR / "per_question_engineered.csv", index=False)
+    pd.DataFrame(nometa_res.records).to_csv(
+        config.RESULTS_DIR / "per_question_engineered_nometa.csv", index=False)
+
+    # 6b. Metadata ablation table — retrieval metrics only (isolates the filter).
+    ablation = pd.DataFrame({
+        "System": ["Baseline", "Engineered (no metadata)", "Engineered"],
+        "Hit Rate@5": [round(r.metrics["Hit Rate@5"], 3) for r in (base_res, nometa_res, eng_res)],
+        "MRR":        [round(r.metrics["MRR"], 3)        for r in (base_res, nometa_res, eng_res)],
+        "Recall@5":   [round(r.metrics["Recall@5"], 3)   for r in (base_res, nometa_res, eng_res)],
+    })
+    ablation.to_csv(config.RESULTS_DIR / "ablation.csv", index=False)
+    (config.RESULTS_DIR / "ablation.md").write_text(
+        f"# Metadata Ablation — retrieval metrics (K={config.TOP_K})\n\n"
+        "All three share the same 40 questions. 'Engineered (no metadata)' is identical "
+        "to 'Engineered' except the Year/Month pre-filter is disabled; the delta between "
+        "them isolates the metadata filter's contribution.\n\n"
+        + _to_markdown(ablation) + "\n",
+        encoding="utf-8",
+    )
 
     # 7. Written analysis with live numbers.
     _write_analysis(base_res.metrics, eng_res.metrics, backend, len(paths), len(df))
@@ -164,10 +190,10 @@ instead show up as *low* Groundedness / *high* Hallucination); the answers are
 wrong because the evidence needed to answer them is usually **not in the top 5**.
 That is a retrieval failure. Factual Accuracy ({base['Factual Accuracy']:.3f}) is
 therefore floored by retrieval: no matter how good the LLM is, it cannot state a
-figure it was never shown. (Note Recall@5 is ~0 for both systems — a metric
-artifact: each real bulletin is hundreds of chunks, so snippet-level recall@5 is
-bounded by ~5/hundreds. Document-level Hit@5/MRR is the meaningful retrieval signal
-here.)
+figure it was never shown. (Recall@5 here is DOCUMENT-LEVEL — distinct gold source
+files surfaced in the top-5 over the total gold files for each question
+({base['Recall@5']:.3f} baseline -> {eng['Recall@5']:.3f} engineered) — so it tracks
+Hit@5/MRR rather than the near-zero chunk-level artifact used previously.)
 
 ## 2. The Metadata Fix
 {metadata_section}

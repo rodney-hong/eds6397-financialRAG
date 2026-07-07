@@ -138,6 +138,17 @@ class EngineeredRetriever:
         return [c for c, _ in self.store.search(question, k, year=year, month=month)]
 
 
+class EngineeredNoMetadataRetriever(EngineeredRetriever):
+    """Ablation: engineered embedding + chunks + prompt, but metadata filter OFF.
+
+    Identical to EngineeredRetriever (same bge model, same engineered chunks); it
+    never pre-filters by Year/Month and always runs the full semantic search. The
+    delta EngineeredRetriever - this isolates the metadata filter's contribution.
+    """
+    def retrieve(self, question: str, k: int = config.TOP_K) -> list[Chunk]:
+        return [c for c, _ in self.store.search(question, k)]  # no year/month filter
+
+
 if __name__ == "__main__":
     from data_prep import ensure_data
     from chunking import chunk_corpus

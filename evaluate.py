@@ -4,12 +4,11 @@ evaluate.py — the metrics harness. Computes all six metrics at K=5 for a syste
 RETRIEVER metrics (over the top-K retrieved chunks vs. the question's gold files):
   * Hit Rate@5 = fraction of queries whose top-5 contains a chunk from a gold file.
   * MRR       = mean of 1 / (rank of the first gold-file chunk); 0 if none in top-5.
-  * Recall    = (relevant chunks retrieved) / (relevant chunks in the DB), averaged
-                over queries. "Relevant chunks" = every chunk whose source_file is a
-                gold file. This is the literal snippet-level reading of the rubric's
-                "relevant snippets found / total relevant snippets in DB"; it is
-                bounded above by K / (relevant chunks per query), so absolute values
-                are modest by construction — what matters is Baseline vs Engineered.
+  * Recall    = (distinct gold source files in the top-K) / (total gold source files
+                for the query), averaged over queries — DOCUMENT-LEVEL recall. The
+                earlier chunk-level reading counted every chunk of a gold file as
+                "relevant", pinning recall near 0; document-level recall reflects
+                whether the right documents were surfaced. Hit@5 and MRR are unchanged.
 
 GENERATOR metrics (over the produced answers):
   * Factual Accuracy = fraction of answers matching the CSV within +/-1%, scored by
@@ -42,17 +41,20 @@ from reward import score_answer
 
 
 # --- Retriever metrics --------------------------------------------------------
-def _retriever_metrics(retrieved: list[Chunk], gold_files: set[str],
-                       total_relevant_in_db: int) -> tuple[int, float, float]:
-    """Return (hit@k, reciprocal_rank, recall@k) for one query."""
+def _retriever_metrics(retrieved: list[Chunk], gold_files: set[str]) -> tuple[int, float, float]:
+    """Return (hit@k, reciprocal_rank, recall@k) for one query.
+
+    Recall is DOCUMENT-LEVEL: (distinct gold source files appearing in the top-K) /
+    (total gold source files for the query). Hit@5 and MRR are unchanged.
+    """
     hit, rr = 0, 0.0
     for rank, c in enumerate(retrieved, start=1):
         if c.source_file in gold_files:
             hit = 1
             rr = 1.0 / rank
             break
-    retrieved_relevant = len({c.chunk_id for c in retrieved if c.source_file in gold_files})
-    recall = retrieved_relevant / total_relevant_in_db if total_relevant_in_db else 0.0
+    retrieved_gold_files = {c.source_file for c in retrieved if c.source_file in gold_files}
+    recall = len(retrieved_gold_files) / len(gold_files) if gold_files else 0.0
     return hit, rr, recall
 
 
@@ -141,12 +143,11 @@ class SystemResult:
 
 def evaluate_system(name: str, retriever, all_chunks: list[Chunk],
                     df: pd.DataFrame, prompt_system: str) -> SystemResult:
-    """Run retrieval + generation + scoring across every evaluation question."""
-    # Precompute, per gold-file, how many chunks in this system's DB are relevant.
-    file_chunk_counts: dict[str, int] = {}
-    for c in all_chunks:
-        file_chunk_counts[c.source_file] = file_chunk_counts.get(c.source_file, 0) + 1
+    """Run retrieval + generation + scoring across every evaluation question.
 
+    `all_chunks` is retained in the signature for call-site stability; document-level
+    recall no longer needs a per-file chunk census.
+    """
     hits, rrs, recalls, facts = [], [], [], []
     tally = ClaimTally()
     records = []
@@ -155,10 +156,9 @@ def evaluate_system(name: str, retriever, all_chunks: list[Chunk],
         q = row["question"]
         gold_answer = row["answer"]
         gold_files = set(row["gold_files"])
-        total_relevant = sum(file_chunk_counts.get(f, 0) for f in gold_files)
 
         retrieved = retriever.retrieve(q, config.TOP_K)
-        hit, rr, recall = _retriever_metrics(retrieved, gold_files, total_relevant)
+        hit, rr, recall = _retriever_metrics(retrieved, gold_files)
 
         ans = generate(q, retrieved, prompt_system)
         fact = score_answer(gold_answer, ans.final_answer, config.FACTUAL_TOLERANCE)

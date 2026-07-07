@@ -29,7 +29,7 @@ from dataclasses import dataclass
 import config
 from chunking import Chunk
 from llm import get_llm
-from reward import extract_final_answer
+from reward import extract_final_answer_from_xml
 
 # --- Offline extractor: question keyword -> the table-row label to read --------
 # Order matters: "outlays exceed receipts" must map to the deficit row, so the
@@ -93,8 +93,10 @@ def _baseline_prompt(question: str, context: str) -> str:
     return (
         f"Context:\n{context}\n\n"
         f"Question: {question}\n\n"
-        "Answer in one short sentence, then output the value on its own line as "
-        "<FINAL_ANSWER>value</FINAL_ANSWER>."
+        "Answer in one short sentence, then output ONLY the bare value inside the tag "
+        "on its own line: a single number with no words, $, %, commas, or units, at the "
+        "scale the question requests, e.g. <FINAL_ANSWER>295432</FINAL_ANSWER>. "
+        "If the answer is not in the context, output <FINAL_ANSWER>Not found</FINAL_ANSWER>."
     )
 
 
@@ -113,9 +115,11 @@ def _engineered_prompt(question: str, context: str) -> str:
     return (
         f"Retrieved context:\n{context}\n\n"
         f"Question: {question}\n\n"
-        "Answer in one sentence, cite the source file, and then output the value "
-        "on its own line as <FINAL_ANSWER>value</FINAL_ANSWER>. If the value is not "
-        "in the context, put <FINAL_ANSWER>Not found</FINAL_ANSWER>."
+        "Answer in one sentence, cite the source file, and then output ONLY the bare "
+        "value inside the tag on its own line: a single number with no words, $, %, "
+        "commas, or units, at the scale the question requests, e.g. "
+        "<FINAL_ANSWER>295432</FINAL_ANSWER>. If the value is not in the context, put "
+        "<FINAL_ANSWER>Not found</FINAL_ANSWER>."
     )
 
 
@@ -131,7 +135,9 @@ def generate(question: str, chunks: list[Chunk], system: str) -> GeneratedAnswer
 
     if llm.available:
         text = llm.complete(sys_prompt, user_prompt, config.GEN_MAX_TOKENS)
-        final = extract_final_answer(text) or text
+        final, _ = extract_final_answer_from_xml(text)
+        if final == text:            # no <FINAL_ANSWER> tag parsed
+            final = "Not found"      # fail safe: don't hand the whole rationale to the scorer
     else:
         # Deterministic offline fallback (no API key).
         value = _offline_answer(question, chunks)
